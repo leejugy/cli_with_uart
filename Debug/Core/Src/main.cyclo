@@ -1,0 +1,7 @@
+../Core/Src/main.c:70:6:HAL_UART_RxCpltCallback	2
+../Core/Src/main.c:78:6:sum_word	1
+../Core/Src/main.c:84:5:__io_putchar	1
+../Core/Src/main.c:88:9:is_command	13
+../Core/Src/main.c:151:5:main	3
+../Core/Src/main.c:210:6:SystemClock_Config	3
+../Core/Src/main.c:253:6:Error_Handler	1

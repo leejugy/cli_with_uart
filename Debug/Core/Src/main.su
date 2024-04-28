@@ -1,0 +1,7 @@
+../Core/Src/main.c:70:6:HAL_UART_RxCpltCallback	16	static
+../Core/Src/main.c:78:6:sum_word	24	static
+../Core/Src/main.c:84:5:__io_putchar	16	static
+../Core/Src/main.c:88:9:is_command	24	static
+../Core/Src/main.c:151:5:main	16	static
+../Core/Src/main.c:210:6:SystemClock_Config	72	static
+../Core/Src/main.c:253:6:Error_Handler	4	static,ignoring_inline_asm
