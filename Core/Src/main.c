@@ -44,6 +44,7 @@ typedef enum {
 	HOME,
 	DEL,
 	BACKSPACE,
+	ENTER,
 	IS_WORD,
 	KEY_ERROR
 }keytype;
@@ -59,6 +60,15 @@ typedef enum {
 
 /* USER CODE BEGIN PV */
 uint8_t command_tx[5];
+uint8_t send_buffer[64];
+typedef struct{
+	uint8_t command_buffer[32];
+	uint8_t command_index;
+	uint8_t cursor_index;
+}command_component;
+
+command_component data[3];
+uint8_t data_num=0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -81,53 +91,57 @@ void sum_word(uint8_t *buf,uint8_t len,char *fmt,...){
 	vsnprintf((char *)buf,len,fmt,arg);
 	va_end(arg);
 }
-int __io_putchar(int ch){
-	HAL_UART_Transmit(&huart1,(uint8_t *)&ch,1,100);
-	return 0;
+
+void uart_send(uint8_t uart_num, char *fmt,...){
+	va_list arg;
+	va_start(arg,fmt);
+	vsnprintf((char *)send_buffer,64,fmt,arg);
+	if(uart_num==1){
+		HAL_UART_Transmit(&huart1,send_buffer,64,100);
+	}
+	else if(uart_num==2){
+		HAL_UART_Transmit(&huart2,send_buffer,64,100);
+	}
+	memset(send_buffer,0,64);
+	va_end(arg);
 }
 keytype is_command(uint8_t *buf,uint8_t i){
 	keytype type_key = KEY_NONE;
 	switch (buf[i]){
 		case 0x1b:
-			printf("is command!\n");
+			HAL_Delay(1);
 			switch(buf[(i+2)%5]){
 				case 0x44:
-					printf("is left\n");
 					type_key = LEFT;
 					break;
 				case 0x43:
-					printf("is right\n");
 					type_key = RIGHT;
 					break;
 				case 0x42:
-					printf("is donw\n");
 					type_key = DOWN;
 					break;
 				case 0x41:
-					printf("is up\n");
 					type_key = UP;
 					break;
 				case 0x34:
-					printf("is end\n");
 					type_key = END;
 					break;
 				case 0x31:
-					printf("is home\n");
 					type_key = HOME;
 					break;
 				default:
-					printf("error!\n");
 					type_key = KEY_ERROR;
 					break;
 			}
 			break;
 		case 0x7f:
-			printf("is delete!\n");
 			type_key = DEL;
 			break;
 		case 0x08:
-			printf("is backsapce!\n");
 			type_key = BACKSPACE;
+			break;
+		case 0x0d:
+			type_key = ENTER;
 			break;
 		default:
 			break;
@@ -136,6 +150,112 @@ keytype is_command(uint8_t *buf,uint8_t i){
 		type_key=IS_WORD;
 	}
 	return type_key;
+}
+
+void cli_start(uint8_t *buf,uint8_t i,keytype key_input){
+	switch (key_input){
+		case LEFT:
+			if(data[data_num].cursor_index>0){
+				data[data_num].cursor_index--;
+				uart_send(1,"\x1B[1D");
+			}
+			break;
+		case RIGHT:
+			if(data[data_num].cursor_index<32 && data[data_num].cursor_index<data[data_num].command_index){
+				data[data_num].cursor_index++;
+				uart_send(1,"\x1B[1C");
+			}
+			break;
+		case UP:
+			if(data[data_num].cursor_index>0){
+				uart_send(1,"\x1B[%dD",data[data_num].cursor_index);
+			}
+			uart_send(1,"\x1B[0J");
+			data_num++;
+			data_num%=3;
+			uart_send(1,"\x1B[4h%s\x1B[4l",data[data_num].command_buffer);
+			data[data_num].cursor_index=data[data_num].command_index;
+			break;
+		case DOWN:
+			if(data[data_num].cursor_index>0){
+				uart_send(1,"\x1B[%dD",data[data_num].cursor_index);
+			}
+			uart_send(1,"\x1B[0J");
+			if(data_num>0){
+				data_num--;
+			}
+			else if(data_num==0){
+				data_num=2;
+			}
+			uart_send(1,"\x1B[4h%s\x1B[4l",data[data_num].command_buffer);
+			data[data_num].cursor_index=data[data_num].command_index;
+			break;
+		case END:
+			if(data[data_num].command_index>data[data_num].cursor_index){
+				uart_send(1,"\x1B[%dC",data[data_num].command_index-data[data_num].cursor_index);
+				data[data_num].cursor_index=data[data_num].command_index;
+			}
+			break;
+		case HOME:
+			if(data[data_num].cursor_index>0){
+				uart_send(1,"\x1B[%dD",data[data_num].cursor_index);
+				data[data_num].cursor_index=0;
+			}
+			break;
+		case ENTER:
+			/*operating command when enter is pressed*/
+			/*end operating*/
+			uart_send(1,"\nCLI-# ");
+			data_num++;
+			data_num%=3;
+			memset(data[data_num].command_buffer,0,32);
+			data[data_num].command_index=0;
+			data[data_num].cursor_index=0;
+			break;
+		case IS_WORD:
+			if(data[data_num].command_index<32){
+				data[data_num].command_index++;
+				if(data[data_num].command_index-1!=data[data_num].cursor_index){
+					for(int8_t j=data[data_num].command_index-1;j>=data[data_num].cursor_index;j--){
+						data[data_num].command_buffer[j+1]=data[data_num].command_buffer[j];
+					}
+				}
+				data[data_num].command_buffer[data[data_num].cursor_index++]=command_tx[i];
+				uart_send(1,"\x1B[4h%c\x1B[4l",command_tx[i]);
+			}
+			break;
+		case BACKSPACE:
+			if(data[data_num].command_index>0 && data[data_num].cursor_index>0){
+				data[data_num].command_index--;
+				data[data_num].command_buffer[--data[data_num].cursor_index]=0;
+				for(int8_t j=data[data_num].cursor_index;j<data[data_num].command_index;j++){
+					data[data_num].command_buffer[j]=data[data_num].command_buffer[j+1];
+				}
+				data[data_num].command_buffer[data[data_num].command_index]=0;
+				uart_send(1,"\x1B[1D\x1B[1P");
+			}
+			break;
+		case DEL:
+			if(data[data_num].command_index>0 && data[data_num].command_index!=data[data_num].cursor_index){
+				data[data_num].command_index--;
+				data[data_num].command_buffer[data[data_num].cursor_index]=0;
+				for(int8_t j=data[data_num].cursor_index;j<data[data_num].command_index;j++){
+					data[data_num].command_buffer[j]=data[data_num].command_buffer[j+1];
+				}
+				data[data_num].command_buffer[data[data_num].command_index]=0;
+				uart_send(1,"\x1B[1P");
+			}
+			break;
+		default:
+			break;
+	}
+	uart_send(2,"\x1B[2J");
+	for (int8_t j=0;j<3;j++){
+		uart_send(2,"%d. buffer val:%s\n",j,data[j].command_buffer);
+	}
+	uart_send(2,"\n\n\n");
+	uart_send(2,"num %d command buffer val:%s\n",data_num,data[data_num].command_buffer);
+	uart_send(2,"command index:%d cursor index:%d\n",data[data_num].command_index,data[data_num].cursor_index);
 }
 /* USER CODE END PFP */
 
@@ -174,8 +294,14 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   UART_Start_Receive_DMA(&huart1,&command_tx[0],5);
+  for (int8_t i=0;i<3;i++){
+	  memset(data[i].command_buffer,0,32);
+  }
+  memset(send_buffer,0,32);
+  uart_send(1,"CLI-# ");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -192,9 +318,7 @@ int main(void)
 		}
 		i++;
 	  }
-	if(key==IS_WORD){
-		printf("sand_val:%c\n",command_tx[i]);
-	}
+	cli_start(&command_tx[0],i,key);
 	memset(command_tx,0,5);
     /* USER CODE END WHILE */
 
