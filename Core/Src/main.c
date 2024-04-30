@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
 #include "dma.h"
 #include "usart.h"
 #include "gpio.h"
@@ -49,6 +50,7 @@ typedef enum {
 	KEY_ERROR
 }keytype;
 
+#define send_buffer_length 64
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -60,7 +62,7 @@ typedef enum {
 
 /* USER CODE BEGIN PV */
 uint8_t command_tx[5];
-uint8_t send_buffer[64];
+uint8_t send_buffer[send_buffer_length];
 typedef struct{
 	uint8_t command_buffer[32];
 	uint8_t command_index;
@@ -69,14 +71,21 @@ typedef struct{
 
 command_component data[3];
 uint8_t data_num=0;
+uint16_t led1_toggle_time=100;
+uint16_t led2_toggle_time=100;
+bool led1_toggle=false;
+bool led2_toggle=false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-void sum_word(uint8_t *buf,uint8_t len,char *fmt,...);
 extern HAL_StatusTypeDef HAL_UART_Receive_DMA(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size);
 extern HAL_StatusTypeDef UART_Start_Receive_DMA(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size);
+bool is_same_word(uint8_t *buf,uint8_t *compare,uint8_t start_compare);
+keytype is_command(uint8_t *buf,uint8_t i);
+void cli_start(uint8_t i,keytype key_input);
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
 	if(huart->Instance==huart1.Instance){
@@ -85,23 +94,17 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 	UNUSED(huart);
 }
 
-void sum_word(uint8_t *buf,uint8_t len,char *fmt,...){
-	va_list arg;
-	va_start(arg,fmt);
-	vsnprintf((char *)buf,len,fmt,arg);
-	va_end(arg);
-}
 void uart_send(uint8_t uart_num, char *fmt,...){
 	va_list arg;
 	va_start(arg,fmt);
-	vsnprintf((char *)send_buffer,64,fmt,arg);
+	vsnprintf((char *)send_buffer,send_buffer_length,fmt,arg);
 	if(uart_num==1){
-		HAL_UART_Transmit(&huart1,send_buffer,64,100);
+		HAL_UART_Transmit(&huart1,send_buffer,send_buffer_length,100);
 	}
 	else if(uart_num==2){
-		HAL_UART_Transmit(&huart2,send_buffer,64,100);
+		HAL_UART_Transmit(&huart2,send_buffer,send_buffer_length,100);
 	}
-	memset(send_buffer,0,64);
+	memset(send_buffer,0,send_buffer_length);
 	va_end(arg);
 }
 keytype is_command(uint8_t *buf,uint8_t i){
@@ -150,8 +153,160 @@ keytype is_command(uint8_t *buf,uint8_t i){
 	}
 	return type_key;
 }
+/*
+ * compare uint8_t buf and compare if they are completely same character return
+ * true. else they are not same character return false
+*/
+bool is_same_word(uint8_t *buf,uint8_t *compare,uint8_t start_compare){
+    bool ret=false;
+    uint8_t end_compare=strlen((const char *)compare);
+    for (uint8_t i=start_compare;i<start_compare+end_compare;i++){
+        if(compare[i-start_compare]==0){
+            ret=false;
+            break;
+        }
+        if (buf[i]==compare[i-start_compare]){
+            ret=true;
+        }
+        else if(buf[i]!=compare[i-start_compare]){
+            ret=false;
+            break;
+        }
+    }
+    return ret;
+}
 
-void cli_start(uint8_t *buf,uint8_t i,keytype key_input){
+void command_input(uint8_t *buf){
+	bool existing_command = false;
+	uint8_t word_len=0;
+	if(is_same_word(buf,(uint8_t *)"help",0)){
+		uart_send(1,"\n---------------------------------------------------");
+		uart_send(1,"----------------\n\n");
+		uart_send(1,"\t\t\tcommand_list\n\n");
+		uart_send(1,"1. printf [string] : print string at terminal.\n");
+		uart_send(1,"note) ledx : x can be 1, 2 value.\n");
+		uart_send(1,"2. ledx [on/off] : on/off led\n");
+		uart_send(1,"3. ledx toggle [number] : toggle led with user set number\n");
+		uart_send(1,"4. adc read : read adc voltage val, where reference voltage,");
+		uart_send(1,"is 3.3V.\n");
+		uart_send(1,"5. clear : clear terminal.\n");
+		uart_send(1,"\n---------------------------------------------------");
+		uart_send(1,"----------------\n\n");
+		existing_command = true;
+	}
+	else if(is_same_word(buf,(uint8_t *)"printf",0)){
+		word_len=strlen("printf")+1;
+		uart_send(1,"\n%s",buf+word_len);
+		existing_command = true;
+	}
+	else if(is_same_word(buf,(uint8_t *)"clear",0)){
+		uart_send(1,"\x1B[2J");
+		existing_command = true;
+	}
+	else if(is_same_word(buf,(uint8_t *)"adc read",0)){
+		uint32_t adc_val = HAL_ADC_GetValue(&hadc1);
+		adc_val *= 3.3;
+		uart_send(1,"\nadc voltage:%dV",(uint16_t)adc_val/4096);
+		existing_command = true;
+	}
+	else if(is_same_word(buf,(uint8_t *)"led",0)){
+		word_len=strlen("led");
+		if(is_same_word(buf,(uint8_t *)"1",word_len)){
+			word_len+=2;
+			if(is_same_word(buf,(uint8_t *)"on",word_len)){
+				led1_toggle=false;
+				HAL_GPIO_WritePin(GPIOA,GPIO_PIN_5,GPIO_PIN_SET);
+				existing_command = true;
+			}
+			else if(is_same_word(buf,(uint8_t *)"off",word_len)){
+				led1_toggle=false;
+				HAL_GPIO_WritePin(GPIOA,GPIO_PIN_5,GPIO_PIN_RESET);
+				existing_command = true;
+			}
+			else if(is_same_word(buf,(uint8_t *)"toggle",word_len)){
+				word_len=strlen("led1 toggle ");
+				uint8_t toggle_len=strlen((char *)buf+word_len);
+				bool is_number = false;
+				for(uint8_t i=0;i<toggle_len;i++){
+					if(buf[word_len+i]>=(int)'0' && buf[word_len+1]<=(int)'9'){
+						is_number=true;
+					}
+					else{
+						is_number=false;
+						break;
+					}
+				}
+				if(!is_number){
+					uart_send(1,(char *)"\nerror : toggle time value must be number!");
+					return;
+				}
+				led1_toggle_time = 0;
+				led1_toggle=true;
+				for(uint8_t i=0;i<toggle_len;i++){
+					led1_toggle_time = (buf[word_len+i]-48)+led1_toggle_time*10;
+				}
+				existing_command = true;
+			}
+		}
+		else if(is_same_word(buf,(uint8_t *)"2",word_len)){
+			word_len+=2;
+			if(is_same_word(buf,(uint8_t *)"on",word_len)){
+				led2_toggle=false;
+				HAL_GPIO_WritePin(GPIOA,GPIO_PIN_12,GPIO_PIN_SET);
+				existing_command = true;
+			}
+			else if(is_same_word(buf,(uint8_t *)"off",word_len)){
+				led2_toggle=false;
+				HAL_GPIO_WritePin(GPIOA,GPIO_PIN_12,GPIO_PIN_RESET);
+				existing_command = true;
+			}
+			else if(is_same_word(buf,(uint8_t *)"toggle",word_len)){
+				word_len=strlen("led2 toggle ");
+				uint8_t toggle_len=strlen((char *)buf+word_len);
+				bool is_number = false;
+				for(uint8_t i=0;i<toggle_len;i++){
+					if(buf[word_len+i]>=(int)'0' && buf[word_len+1]<=(int)'9'){
+						is_number=true;
+					}
+					else{
+						is_number=false;
+						break;
+					}
+				}
+				if(!is_number){
+					uart_send(1,(char *)"\nerror : toggle time value must be number!");
+					return;
+				}
+				led2_toggle_time = 0;
+				led2_toggle=true;
+				for(uint8_t i=0;i<toggle_len;i++){
+					led2_toggle_time = (buf[word_len+i]-48)+led2_toggle_time*10;
+				}
+				existing_command = true;
+			}
+		}
+	}
+	if (!existing_command){
+		uart_send(1,"\ncommand is not existing. type \'help\' to get command list.");
+	}
+}
+
+void gpio_led_toggle(uint32_t *led1_time,uint32_t *led2_time){
+	if (led1_toggle){
+		if (HAL_GetTick()-*led1_time>led1_toggle_time){
+			*led1_time=HAL_GetTick();
+			HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);
+		}
+	}
+	if (led2_toggle){
+		if (HAL_GetTick()-*led2_time>led2_toggle_time){
+			*led2_time=HAL_GetTick();
+			HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_12);
+		}
+	}
+}
+
+void cli_start(uint8_t i,keytype key_input){
 	switch (key_input){
 		case LEFT:
 			if(data[data_num].cursor_index>0){
@@ -203,6 +358,7 @@ void cli_start(uint8_t *buf,uint8_t i,keytype key_input){
 			break;
 		case ENTER:
 			/*operating command when enter is pressed*/
+			command_input(data[data_num].command_buffer);
 			/*end operating*/
 			uart_send(1,"\nCLI-# ");
 			data_num++;
@@ -294,8 +450,12 @@ int main(void)
   MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   UART_Start_Receive_DMA(&huart1,&command_tx[0],5);
+  HAL_ADC_Start(&hadc1);
+  uint32_t pre_time1=HAL_GetTick();
+  uint32_t pre_time2=HAL_GetTick();
   for (int8_t i=0;i<3;i++){
 	  memset(data[i].command_buffer,0,32);
   }
@@ -311,13 +471,14 @@ int main(void)
 	keytype key=KEY_NONE;
 	for (;;){
 		i=i%5;
+		gpio_led_toggle(&pre_time1,&pre_time2);
 		key=is_command(&command_tx[0],i);
 		if (key!=KEY_NONE){
 			break;
 		}
 		i++;
 	  }
-	cli_start(&command_tx[0],i,key);
+	cli_start(i,key);
 	memset(command_tx,0,5);
     /* USER CODE END WHILE */
 
@@ -334,6 +495,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -360,6 +522,12 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }
