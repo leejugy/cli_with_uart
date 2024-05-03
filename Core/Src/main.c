@@ -689,7 +689,7 @@ void command_input(uint8_t *buf){
 				uart_send(1,"\nwirte complete!\n");
 			}
 			else{
-					uart_send(1,"\nwirte fail!\n");
+				uart_send(1,"\nwirte fail!\n");
 			}
 		}
 		else{
