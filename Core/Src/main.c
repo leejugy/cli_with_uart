@@ -659,9 +659,9 @@ void command_input(uint8_t *buf){
 			uart_send(1,"\nsend val %s is not number\n",buf+word_len);
 		}
 		word_len=strlen("flash erase 0x00000000 ");
-		uint16_t flash_read_val = string_to_num((char *)&buf[word_len],&is_number,DEC);
+		uint16_t flash_erase_val = string_to_num((char *)&buf[word_len],&is_number,DEC);
 		if(is_number){
-			if(flash_erase(flash_start_address,flash_read_val)){
+			if(flash_erase(flash_start_address,flash_erase_val)){
 				uart_send(1,"\nerase complete!\n");
 			}
 			else{
@@ -681,11 +681,11 @@ void command_input(uint8_t *buf){
 			uart_send(1,"\nsend val %s is not number\n",buf+word_len);
 		}
 		word_len=strlen("flash write 0x00000000 ");
-		uint16_t flash_read_val = string_to_num((char *)&buf[word_len],&is_number,DEC);
-		uint8_t *data=(uint8_t *)malloc(sizeof(uint8_t)*flash_read_val);
-		memset(data,2,flash_read_val);
+		uint16_t flash_write_val = string_to_num((char *)&buf[word_len],&is_number,DEC);
+		uint8_t *data=(uint8_t *)malloc(sizeof(uint8_t)*flash_write_val);
+		memset(data,2,flash_write_val);
 		if(is_number){
-			if(flash_write(flash_start_address,flash_read_val,data)){
+			if(flash_write(flash_start_address,flash_write_val,data)){
 				uart_send(1,"\nwirte complete!\n");
 			}
 			else{
