@@ -51,6 +51,9 @@ typedef enum {
 }keytype;
 
 #define send_buffer_length 64
+#define FW_START_ADD  0x08000000+1024*60
+#define F103_RB_START_ADD 0x08000000
+#define F103_RB_END_ADD 0x0801FFFF
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -119,6 +122,11 @@ typedef enum{
 	CAN=0x18,
 } ymodem_protocol_name;
 
+typedef enum{
+	HEX=16,
+	DEC=10
+} type_nubmer;
+
 uint8_t rx_ymodem[1024+5];
 uint8_t rx_1bit;
 uint16_t rx_index=0;
@@ -130,15 +138,146 @@ bool uart1_send_flag = false;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+//@user function begin
+
+//@HAL function
 extern HAL_StatusTypeDef HAL_UART_Receive_DMA(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size);
 extern HAL_StatusTypeDef UART_Start_Receive_DMA(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size);
+
+//@is function
 bool is_same_word(uint8_t *buf,uint8_t *compare,uint8_t start_compare);
 keytype is_command(uint8_t *buf,uint8_t i);
+
+//@cli function
 void cli_start(uint8_t i,keytype key_input);
+void command_input(uint8_t *buf);
+
+//@translate function
+uint8_t chartoint(uint8_t ascii);
+uint32_t string_to_num(char *input_string, bool* is_number, type_nubmer num_type); //ref @type_nubmer
+
+//@ymodem function
 void ymodem_transmit();
+void ymodem_fw_update();
+
+//@uart function
 void uart_send_1bit(uint8_t uart_num,uint8_t *send_1bit_buffer);
 void uart_send(uint8_t uart_num, char *fmt,...);
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 
+//@flash function
+bool flash_erase(uint32_t start_address,uint8_t data_len);
+void flash_read(uint32_t address,uint32_t bit_num);
+bool flash_write(uint32_t start_address,uint32_t data_len,uint8_t *data);
+
+
+
+
+
+
+uint32_t string_to_num(char *input_string, bool* is_number, type_nubmer num_type){
+    uint16_t length = strlen(input_string);
+    uint32_t ret = 0;
+    if (num_type == DEC){
+		for(uint32_t i=0;i<length;i++){
+			if((input_string[i] >= (int)'0') && (input_string[i] <= (int) '9'))
+			{
+				*is_number=true;
+				ret = input_string[i]-((int)'0') + ret * num_type;
+			}
+			else if(input_string[i] == ' '){
+				return ret;
+			}
+			else{
+				*is_number=false;
+				return 0;
+			}
+		}
+    }
+    else if (num_type == HEX){
+		for(uint32_t i=0;i<length;i++){
+			if((input_string[i] >= (int)'0') && (input_string[i] <= (int) '9'))
+			{
+				*is_number=true;
+				ret = input_string[i]-((int)'0') + ret * num_type;
+			}
+			else if((input_string[i] >= (int)'A') && (input_string[i] <= (int) 'F')){
+				*is_number=true;
+				ret = input_string[i]-55 + ret * num_type;
+			}
+			else if((input_string[i] >= (int)'a') && (input_string[i] <= (int) 'f')){
+				*is_number=true;
+				ret = input_string[i]-87 + ret * num_type;
+			}
+			else if(input_string[i] == ' '){
+				return ret;
+			}
+			else{
+				*is_number=false;
+				return 0;
+			}
+		}
+    }
+    return ret;
+}
+
+void flash_read(uint32_t address,uint32_t bit_num){
+	uint8_t *data=(uint8_t *)address;
+	uart_send(1,"\n");
+	for(uint32_t i=0;i<bit_num;i++){
+		uart_send(1,"data adress : 0x%08X, data : 0x%02X\n",address+i,data[i]);
+	}
+}
+
+bool flash_erase(uint32_t start_address,uint8_t data_len)
+{
+  uint32_t NbOfPages = 0;
+  uint32_t start_page = (start_address - F103_RB_START_ADD)/FLASH_PAGE_SIZE;
+  start_page = start_page * 1024 + F103_RB_START_ADD;
+  uint32_t PageError = 0;
+  /* Variable contains Flash operation status */
+  HAL_StatusTypeDef status;
+  FLASH_EraseInitTypeDef eraseinitstruct;
+
+  /* Get the number of sector to erase from 1st sector */
+  NbOfPages =
+    (data_len / FLASH_PAGE_SIZE) + 1;
+  eraseinitstruct.TypeErase = FLASH_TYPEERASE_PAGES;
+  eraseinitstruct.PageAddress = start_page;
+  eraseinitstruct.NbPages = NbOfPages;
+  HAL_FLASH_Unlock();
+  status = HAL_FLASHEx_Erase(&eraseinitstruct, &PageError);
+  HAL_FLASH_Lock();
+  if (status != HAL_OK)
+  {
+    return false;
+  }
+  return true;
+}
+
+bool flash_write(uint32_t start_address,uint32_t data_len,uint8_t *data){
+	bool ret = false;
+	flash_erase(start_address,data_len);
+	HAL_FLASH_Unlock();
+	uint16_t send_data=0;
+	for(uint32_t i=0;i<data_len;i+=2){
+		send_data+=data[i+1]<<8;
+		send_data+=data[i];
+		if(HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD,start_address+i,(uint16_t)send_data)==HAL_OK){
+			ret = true;
+			send_data=0;
+		}
+		else{
+			ret=false;
+		}
+	}
+	HAL_FLASH_Lock();
+	return ret;
+}
+
+uint8_t chartoint(uint8_t ascii){
+	return ascii-48;
+}
 
 void uart_send_1bit(uint8_t uart_num,uint8_t *send_1bit_buffer){
 	if(uart_num==1){
@@ -202,7 +341,110 @@ void ymodem_transmit(){
 					break;
 				}
 				else{
-					file_size=(rx_ymodem[file_index]-48)+file_size*10;
+					file_size=chartoint(rx_ymodem[file_index])+file_size*10;
+				}
+			}
+			calculate_crc16(rx_ymodem+1027, 2, &loop_do);
+
+			memset(rx_ymodem,0,1029);
+			rx_index=0;
+
+			_1bit_buffer=ACK;
+			uart_send_1bit(1,&_1bit_buffer);
+			_1bit_buffer='C';
+			uart_send_1bit(1,&_1bit_buffer);
+			send_c_flag=false;
+		}
+		else if(rx_1bit==EOT && first_send_eot){
+			_1bit_buffer=NAK;
+			uart_send_1bit(1,&_1bit_buffer);
+			first_send_eot=false;
+		}
+		else if(rx_1bit==EOT && !first_send_eot){
+			first_send_eot=true;
+			_1bit_buffer=ACK;
+			uart_send_1bit(1,&_1bit_buffer);
+			_1bit_buffer='C';
+			uart_send_1bit(1,&_1bit_buffer);
+
+			_1bit_buffer=ACK;
+			uart_send_1bit(1,&_1bit_buffer);
+			_1bit_buffer='C';
+			uart_send_1bit(1,&_1bit_buffer);
+
+			loop_do=false;
+			uart1_send_flag=false;
+			rx_1bit=0;
+
+			uart_send(2,"\n+++++++++++++++++++++++++++++++++++++++++\n");
+			uart_send(2,"\nsend_complete!\n");
+			uart_send(2,"INFO)\nfile name : ");
+			uart_send(2,"%s",file_name);
+			uart_send(2,"\n");
+			uart_send(2,"file size : ");
+			uart_send(2,"%lu",file_size);
+			uart_send(2,"\n");
+			HAL_UART_DMAStop(&huart1);
+			UART_Start_Receive_DMA(&huart1,&command_tx[0],5);;
+		}
+		else if(rx_ymodem[0]==STX){
+			HAL_Delay(10);
+			calculate_crc16(rx_ymodem+1027, 2, &loop_do);
+			/*buffer send_occur*/
+			for(uint16_t i=3;i<=1026;i++){
+				uart_send_1bit(2,&rx_ymodem[i]);
+			}
+			memset(rx_ymodem,0,1029);
+			rx_index=0;
+			_1bit_buffer=ACK;
+			uart_send_1bit(1,&_1bit_buffer);
+			send_c_flag=false;
+		  }
+	}
+}
+
+void ymodem_fw_update(){
+	HAL_UART_DMAStop(&huart1);
+	UART_Start_Receive_DMA(&huart1,&rx_1bit,1);
+
+	HAL_Delay(100);
+	bool send_c_flag=true;
+	bool first_send_eot=true;
+	bool loop_do=true;
+
+	uint8_t _1bit_buffer;
+	uint32_t file_size=0;
+	uint8_t file_index;
+	uint8_t file_name[64];
+	memset(file_name,0,64);
+	memset(rx_ymodem,0,1029);
+	rx_index=0;
+
+	uart_send(1,"\n");
+	while(loop_do){
+		uart1_send_flag=true;
+		if(send_c_flag){
+			HAL_Delay(100);
+			_1bit_buffer='C';
+			uart_send_1bit(1,&_1bit_buffer);
+			_1bit_buffer='C';
+			uart_send_1bit(1,&_1bit_buffer);
+		}
+		if(rx_ymodem[0]==SOH){
+			HAL_Delay(10);
+			for(file_index=3;file_index<128;file_index++){
+				file_name[file_index-3]=rx_ymodem[file_index];
+				if(rx_ymodem[file_index]==0){
+					file_index++;
+					break;
+				}
+			}
+			for(;file_index<128;file_index++){
+				if(rx_ymodem[file_index]==' '){
+					break;
+				}
+				else{
+					file_size=chartoint(rx_ymodem[file_index])+file_size*10;
 				}
 			}
 			calculate_crc16(rx_ymodem+1027, 2, &loop_do);
@@ -364,6 +606,8 @@ bool is_same_word(uint8_t *buf,uint8_t *compare,uint8_t start_compare){
 void command_input(uint8_t *buf){
 	bool existing_command = false;
 	uint8_t word_len=0;
+	uint32_t flash_start_address;
+
 	if(is_same_word(buf,(uint8_t *)"help",0)){
 		uart_send(1,"\n---------------------------------------------------");
 		uart_send(1,"----------------\n\n");
@@ -374,8 +618,13 @@ void command_input(uint8_t *buf){
 		uart_send(1,"3. ledx toggle [number] : toggle led with user set number\n");
 		uart_send(1,"4. adc read : read adc voltage val, where reference voltage,");
 		uart_send(1,"is 3.3V.\n");
-		uart_send(1,"5. clear : clear terminal.\n");
+		uart_send(1,"5. clear [x] : clear uart terminal, x can be 1,2.\n");
 		uart_send(1,"6. ymodem transmit : transmit data with ymodem.\n");
+		uart_send(1,"7. ymodem fw update : update fw.\n");
+		uart_send(1,"note) start adrress must have 8 length.\n");
+		uart_send(1,"8. flash read 0x[start adrress] [num]: read flash memory.\n");
+		uart_send(1,"9. flash erase 0x[start adrress] [num] : erase flash memory.\n");
+		uart_send(1,"10. flash write 0x[start adrress] : write flash memory.\n");
 		uart_send(1,"\n---------------------------------------------------");
 		uart_send(1,"----------------\n\n");
 		existing_command = true;
@@ -385,12 +634,88 @@ void command_input(uint8_t *buf){
 		uart_send(1,"\n%s",buf+word_len);
 		existing_command = true;
 	}
+	else if(is_same_word(buf,(uint8_t *)"flash read ",0)){
+		word_len=strlen("flash read 0x");
+		bool is_number;
+		flash_start_address = string_to_num((char *)&buf[word_len],&is_number,HEX);
+		if(!is_number){
+			uart_send(1,"\nsend val %s is not number\n",buf+word_len);
+		}
+		word_len=strlen("flash read 0x00000000 ");
+		uint16_t flash_read_val = string_to_num((char *)&buf[word_len],&is_number,DEC);
+		if(is_number){
+			flash_read(flash_start_address,flash_read_val);
+		}
+		else{
+			uart_send(1,"\nsend val %s is not number\n",buf+word_len);
+		}
+		existing_command = true;
+	}
+	else if(is_same_word(buf,(uint8_t *)"flash erase ",0)){
+		word_len=strlen("flash erase 0x");
+		bool is_number;
+		flash_start_address = string_to_num((char *)&buf[word_len],&is_number,HEX);
+		if(!is_number){
+			uart_send(1,"\nsend val %s is not number\n",buf+word_len);
+		}
+		word_len=strlen("flash erase 0x00000000 ");
+		uint16_t flash_read_val = string_to_num((char *)&buf[word_len],&is_number,DEC);
+		if(is_number){
+			if(flash_erase(flash_start_address,flash_read_val)){
+				uart_send(1,"\nerase complete!\n");
+			}
+			else{
+				uart_send(1,"\nerase fail!\n");
+			}
+		}
+		else{
+			uart_send(1,"\nsend val %s is not number\n",buf+word_len);
+		}
+		existing_command = true;
+		}
+	else if(is_same_word(buf,(uint8_t *)"flash write ",0)){
+		word_len=strlen("flash write 0x");
+		bool is_number;
+		flash_start_address = string_to_num((char *)&buf[word_len],&is_number,HEX);
+		if(!is_number){
+			uart_send(1,"\nsend val %s is not number\n",buf+word_len);
+		}
+		word_len=strlen("flash write 0x00000000 ");
+		uint16_t flash_read_val = string_to_num((char *)&buf[word_len],&is_number,DEC);
+		uint8_t *data=(uint8_t *)malloc(sizeof(uint8_t)*flash_read_val);
+		memset(data,2,flash_read_val);
+		if(is_number){
+			if(flash_write(flash_start_address,flash_read_val,data)){
+				uart_send(1,"\nwirte complete!\n");
+			}
+			else{
+					uart_send(1,"\nwirte fail!\n");
+			}
+		}
+		else{
+			uart_send(1,"\nsend val %s is not number\n",buf+word_len);
+		}
+		existing_command = true;
+		}
 	else if(is_same_word(buf,(uint8_t *)"clear",0)){
 		uart_send(1,"\x1B[2J");
+		uart_send(2,"\x1B[2J");
+		existing_command = true;
+	}
+	else if(is_same_word(buf,(uint8_t *)"clear 1",0)){
+		uart_send(1,"\x1B[2J");
+		existing_command = true;
+	}
+	else if(is_same_word(buf,(uint8_t *)"clear 2",0)){
+		uart_send(2,"\x1B[2J");
 		existing_command = true;
 	}
 	else if(is_same_word(buf,(uint8_t *)"ymodem transmit",0)){
 		ymodem_transmit();
+		existing_command = true;
+	}
+	else if(is_same_word(buf,(uint8_t *)"ymodem fw update",0)){
+		ymodem_fw_update();
 		existing_command = true;
 	}
 	else if(is_same_word(buf,(uint8_t *)"adc read",0)){
@@ -415,26 +740,14 @@ void command_input(uint8_t *buf){
 			}
 			else if(is_same_word(buf,(uint8_t *)"toggle",word_len)){
 				word_len=strlen("led1 toggle ");
-				uint8_t toggle_len=strlen((char *)buf+word_len);
 				bool is_number = false;
-				for(uint8_t i=0;i<toggle_len;i++){
-					if(buf[word_len+i]>=(int)'0' && buf[word_len+1]<=(int)'9'){
-						is_number=true;
-					}
-					else{
-						is_number=false;
-						break;
-					}
-				}
+				led1_toggle_time = string_to_num((char *)buf+word_len,&is_number,DEC);
 				if(!is_number){
 					uart_send(1,(char *)"\nerror : toggle time value must be number!");
 					return;
 				}
-				led1_toggle_time = 0;
+
 				led1_toggle=true;
-				for(uint8_t i=0;i<toggle_len;i++){
-					led1_toggle_time = (buf[word_len+i]-48)+led1_toggle_time*10;
-				}
 				existing_command = true;
 			}
 		}
@@ -452,27 +765,16 @@ void command_input(uint8_t *buf){
 			}
 			else if(is_same_word(buf,(uint8_t *)"toggle",word_len)){
 				word_len=strlen("led2 toggle ");
-				uint8_t toggle_len=strlen((char *)buf+word_len);
 				bool is_number = false;
-				for(uint8_t i=0;i<toggle_len;i++){
-					if(buf[word_len+i]>=(int)'0' && buf[word_len+1]<=(int)'9'){
-						is_number=true;
-					}
-					else{
-						is_number=false;
-						break;
-					}
-				}
+				led2_toggle_time = string_to_num((char *)buf+word_len,&is_number,DEC);
 				if(!is_number){
 					uart_send(1,(char *)"\nerror : toggle time value must be number!");
 					return;
 				}
-				led2_toggle_time = 0;
+
 				led2_toggle=true;
-				for(uint8_t i=0;i<toggle_len;i++){
-					led2_toggle_time = (buf[word_len+i]-48)+led2_toggle_time*10;
-				}
 				existing_command = true;
+
 			}
 		}
 	}
