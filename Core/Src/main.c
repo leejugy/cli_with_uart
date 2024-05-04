@@ -288,18 +288,14 @@ void uart_send_1bit(uint8_t uart_num,uint8_t *send_1bit_buffer){
 	}
 }
 
-bool calculate_crc16(uint8_t *data, int length, bool *loop_do) {
+uint16_t calculate_crc16(uint8_t *data, int length) {
     uint16_t crc = 0;
     for (int i = 0; i < length; i++) {
         crc = (crc << 8) ^ crc_table[((crc >> 8) ^ data[i]) & 0xFF];
     }
-    if(crc!=0){
-    	uart_send(2,"CRC is incorrect!\n");
-    	*loop_do=false;
-    	return false;
-    }
-    return true;
+    return crc;
 }
+
 void ymodem_transmit(){
 	HAL_UART_DMAStop(&huart1);
 	UART_Start_Receive_DMA(&huart1,&rx_1bit,1);
@@ -344,8 +340,6 @@ void ymodem_transmit(){
 					file_size=chartoint(rx_ymodem[file_index])+file_size*10;
 				}
 			}
-			calculate_crc16(rx_ymodem+1027, 2, &loop_do);
-
 			memset(rx_ymodem,0,1029);
 			rx_index=0;
 
@@ -388,111 +382,14 @@ void ymodem_transmit(){
 			UART_Start_Receive_DMA(&huart1,&command_tx[0],5);;
 		}
 		else if(rx_ymodem[0]==STX){
-			HAL_Delay(10);
-			calculate_crc16(rx_ymodem+1027, 2, &loop_do);
-			/*buffer send_occur*/
-			for(uint16_t i=3;i<=1026;i++){
-				uart_send_1bit(2,&rx_ymodem[i]);
-			}
-			memset(rx_ymodem,0,1029);
-			rx_index=0;
-			_1bit_buffer=ACK;
-			uart_send_1bit(1,&_1bit_buffer);
-			send_c_flag=false;
-		  }
-	}
-}
-
-void ymodem_fw_update(){
-	HAL_UART_DMAStop(&huart1);
-	UART_Start_Receive_DMA(&huart1,&rx_1bit,1);
-
-	HAL_Delay(100);
-	bool send_c_flag=true;
-	bool first_send_eot=true;
-	bool loop_do=true;
-
-	uint8_t _1bit_buffer;
-	uint32_t file_size=0;
-	uint8_t file_index;
-	uint8_t file_name[64];
-	memset(file_name,0,64);
-	memset(rx_ymodem,0,1029);
-	rx_index=0;
-
-	uart_send(1,"\n");
-	while(loop_do){
-		uart1_send_flag=true;
-		if(send_c_flag){
 			HAL_Delay(100);
-			_1bit_buffer='C';
-			uart_send_1bit(1,&_1bit_buffer);
-			_1bit_buffer='C';
-			uart_send_1bit(1,&_1bit_buffer);
-		}
-		if(rx_ymodem[0]==SOH){
-			HAL_Delay(10);
-			for(file_index=3;file_index<128;file_index++){
-				file_name[file_index-3]=rx_ymodem[file_index];
-				if(rx_ymodem[file_index]==0){
-					file_index++;
-					break;
-				}
+			uint16_t crc_val = calculate_crc16(rx_ymodem+3, 1024);
+			uint16_t crc16_val = rx_ymodem[1027]<<8;
+			crc16_val+=rx_ymodem[1028];
+			if(crc16_val != crc_val){
+				uart_send(2,"crc incorrect!\n");
+				uart_send(1,"crc incorrect!\n");
 			}
-			for(;file_index<128;file_index++){
-				if(rx_ymodem[file_index]==' '){
-					break;
-				}
-				else{
-					file_size=chartoint(rx_ymodem[file_index])+file_size*10;
-				}
-			}
-			calculate_crc16(rx_ymodem+1027, 2, &loop_do);
-
-			memset(rx_ymodem,0,1029);
-			rx_index=0;
-
-			_1bit_buffer=ACK;
-			uart_send_1bit(1,&_1bit_buffer);
-			_1bit_buffer='C';
-			uart_send_1bit(1,&_1bit_buffer);
-			send_c_flag=false;
-		}
-		else if(rx_1bit==EOT && first_send_eot){
-			_1bit_buffer=NAK;
-			uart_send_1bit(1,&_1bit_buffer);
-			first_send_eot=false;
-		}
-		else if(rx_1bit==EOT && !first_send_eot){
-			first_send_eot=true;
-			_1bit_buffer=ACK;
-			uart_send_1bit(1,&_1bit_buffer);
-			_1bit_buffer='C';
-			uart_send_1bit(1,&_1bit_buffer);
-
-			_1bit_buffer=ACK;
-			uart_send_1bit(1,&_1bit_buffer);
-			_1bit_buffer='C';
-			uart_send_1bit(1,&_1bit_buffer);
-
-			loop_do=false;
-			uart1_send_flag=false;
-			rx_1bit=0;
-
-			uart_send(2,"\n+++++++++++++++++++++++++++++++++++++++++\n");
-			uart_send(2,"\nsend_complete!\n");
-			uart_send(2,"INFO)\nfile name : ");
-			uart_send(2,"%s",file_name);
-			uart_send(2,"\n");
-			uart_send(2,"file size : ");
-			uart_send(2,"%lu",file_size);
-			uart_send(2,"\n");
-			HAL_UART_DMAStop(&huart1);
-			UART_Start_Receive_DMA(&huart1,&command_tx[0],5);;
-		}
-		else if(rx_ymodem[0]==STX){
-			HAL_Delay(10);
-			calculate_crc16(rx_ymodem+1027, 2, &loop_do);
 			/*buffer send_occur*/
 			for(uint16_t i=3;i<=1026;i++){
 				uart_send_1bit(2,&rx_ymodem[i]);
